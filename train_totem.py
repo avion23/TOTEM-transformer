@@ -10,6 +10,8 @@ from training import train_vqvae, train_transformer, fine_tune_codebook, create_
 from analysis import analyze_codebook, analyze_reconstruction
 from utils import to_device_and_dtype, clear_cache
 from config import *
+from run_totem import TotemForecaster
+
 
 def main():
     parser = argparse.ArgumentParser(description='TOTEM Training')
@@ -26,20 +28,16 @@ def main():
     
     args = parser.parse_args()
     
-    # Set seeds for reproducibility
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     
-    # Create save directory
     os.makedirs(args.save_dir, exist_ok=True)
     os.makedirs(os.path.join(args.save_dir, 'logs'), exist_ok=True)
     
-    # Check if data file exists
     if not os.path.exists(args.data):
         print(f"Error: Data file {args.data} not found")
         return
     
-    # Load and preprocess data
     print(f"Loading data from {args.data}")
     train_loader, val_loader, test_loader, dataset_info = load_dataset(
         args.data,
@@ -55,11 +53,9 @@ def main():
     
     print(f"Data shape: {data_norm.shape}, Features: {features}")
     
-    # Number of input channels
     in_channels = 1 if args.model_type == 'single' else data_norm.shape[1]
     
     if args.mode == 'vqvae':
-        # Create and train VQVAE
         vqvae = VQVAE(
             in_channels=in_channels,
             embedding_dim=EMBEDDING_DIM,
@@ -80,13 +76,15 @@ def main():
             save_dir=args.save_dir
         )
         
-        # Evaluate model on test set
         vqvae.eval()
-        data_tensor = torch.tensor(data_norm, dtype=torch.float32).transpose(0, 1).contiguous().unsqueeze(0)
+        max_eval_samples = min(50000, data_norm.shape[0])
+        eval_indices = np.random.choice(data_norm.shape[0], max_eval_samples, replace=False)
+        eval_data = data_norm[eval_indices]
+        
+        data_tensor = torch.tensor(eval_data, dtype=torch.float32).transpose(0, 1).contiguous().unsqueeze(0)
         data_tensor = to_device_and_dtype(data_tensor)
         
         with torch.no_grad():
-            # Process in chunks to avoid MPS limitations
             if data_tensor.shape[2] > 1000:
                 chunks = []
                 indices_list = []
@@ -106,36 +104,28 @@ def main():
         recon = x_recon.squeeze().transpose(0, 1).contiguous().numpy()
         indices = indices.squeeze().numpy()
         
-        # Analyze reconstruction quality
-        recon_metrics = analyze_reconstruction(data_norm, recon)
+        recon_metrics = analyze_reconstruction(eval_data, recon)
         print(f"Reconstruction MSE: {recon_metrics['mse']:.6f}")
         if recon_metrics['scale_error'] is not None:
             print(f"Scale error: {recon_metrics['scale_error']:.6f}")
         
-        # Analyze codebook usage
         codebook_metrics = analyze_codebook(indices)
         print(f"Active tokens: {codebook_metrics['active_tokens']}/{CODEBOOK_SIZE}")
         print(f"Codebook entropy: {codebook_metrics['entropy']:.4f} bits")
         print(f"50% of data encoded with {codebook_metrics['tokens_50pct']} tokens")
         
     elif args.mode == 'transformer':
-        # Load pretrained VQVAE
         if args.vqvae_path is None:
             args.vqvae_path = os.path.join(args.save_dir, 'best_vqvae.pt')
-        
+
         if not os.path.exists(args.vqvae_path):
             print(f"Error: VQVAE model {args.vqvae_path} not found")
             return
         
-        # Create VQVAE and load weights
-        vqvae = VQVAE(in_channels=in_channels)
-        vqvae = to_device_and_dtype(vqvae)
-        
+        forecaster = TotemForecaster(mode=args.model_type)
         try:
-            vqvae.load_state_dict(torch.load(args.vqvae_path, map_location=DEVICE))
-            vqvae.eval()
-            
-            # Also save a copy of this VQVAE in the current save directory
+            forecaster.load_models(args.vqvae_path)
+            vqvae = forecaster.vqvae
             vqvae_save_path = os.path.join(args.save_dir, f'vqvae_{args.model_type}_used_for_transformer.pt')
             torch.save(vqvae.state_dict(), vqvae_save_path)
             print(f"Saved copy of VQVAE model to {vqvae_save_path}")
@@ -143,10 +133,8 @@ def main():
             print(f"Error loading VQVAE model: {e}")
             return
         
-        # Create token dataset
         token_sequences = create_token_dataset(vqvae, train_loader)
         
-        # Create loaders for token sequences
         token_train_size = int(len(token_sequences) * 0.8)
         token_val_size = int(len(token_sequences) * 0.1)
         
@@ -158,7 +146,6 @@ def main():
         token_val_loader = DataLoader(token_val, batch_size=args.batch_size, pin_memory=True)
         token_test_loader = DataLoader(token_test, batch_size=args.batch_size, pin_memory=True)
         
-        # Create and train transformer
         transformer = NanoGPT(
             vocab_size=CODEBOOK_SIZE,
             model_dim=MODEL_DIM,
@@ -178,7 +165,6 @@ def main():
         )
         
     elif args.mode == 'finetune':
-        # Load pretrained VQVAE
         if args.vqvae_path is None:
             args.vqvae_path = os.path.join(args.save_dir, 'best_vqvae.pt')
         
@@ -186,38 +172,10 @@ def main():
             print(f"Error: VQVAE model {args.vqvae_path} not found")
             return
         
-        # Create VQVAE and load weights
         vqvae = VQVAE(in_channels=in_channels)
         vqvae = to_device_and_dtype(vqvae)
-        vqvae.load_state_dict(torch.load(args.vqvae_path, map_location=DEVICE))
+        vqvae.load_state_dict(torch.load(args.vqvae_path, map_location=DEVICE, weights_only=True))
         
-        # Analyze codebook before fine-tuning
-        vqvae.eval()
-        data_tensor = torch.tensor(data_norm, dtype=torch.float32).transpose(0, 1).contiguous().unsqueeze(0)
-        data_tensor = to_device_and_dtype(data_tensor)
-        
-        with torch.no_grad():
-            # Process in chunks to avoid MPS limitations
-            if data_tensor.shape[2] > 1000:
-                indices_list = []
-                for i in range(0, data_tensor.shape[2], 1000):
-                    end = min(i + 1000, data_tensor.shape[2])
-                    chunk = data_tensor[:, :, i:end]
-                    _, _, chunk_indices, _ = vqvae(chunk, normalize=False)
-                    indices_list.append(chunk_indices.cpu())
-                indices = torch.cat(indices_list, dim=1)
-            else:
-                _, _, indices, _ = vqvae(data_tensor, normalize=False)
-                indices = indices.cpu()
-        
-        indices = indices.squeeze().numpy()
-        
-        before_metrics = analyze_codebook(indices)
-        print("Codebook usage before fine-tuning:")
-        print(f"Active tokens: {before_metrics['active_tokens']}/{CODEBOOK_SIZE}")
-        print(f"Codebook entropy: {before_metrics['entropy']:.4f} bits")
-        
-        # Fine-tune VQVAE
         print("Fine-tuning VQVAE codebook...")
         vqvae = fine_tune_codebook(
             vqvae=vqvae,
@@ -227,11 +185,14 @@ def main():
             save_dir=args.save_dir
         )
         
-        # Analyze codebook after fine-tuning
-        vqvae.eval()
+        max_eval_samples = min(20000, data_norm.shape[0])
+        eval_indices = np.random.choice(data_norm.shape[0], max_eval_samples, replace=False)
+        eval_data = data_norm[eval_indices]
+        
+        data_tensor = torch.tensor(eval_data, dtype=torch.float32).transpose(0, 1).contiguous().unsqueeze(0)
+        data_tensor = to_device_and_dtype(data_tensor)
         
         with torch.no_grad():
-            # Process in chunks to avoid MPS limitations
             if data_tensor.shape[2] > 1000:
                 indices_list = []
                 for i in range(0, data_tensor.shape[2], 1000):
@@ -250,9 +211,7 @@ def main():
         print("Codebook usage after fine-tuning:")
         print(f"Active tokens: {after_metrics['active_tokens']}/{CODEBOOK_SIZE}")
         print(f"Codebook entropy: {after_metrics['entropy']:.4f} bits")
-        print(f"Improvement: {after_metrics['active_tokens'] - before_metrics['active_tokens']} more active tokens")
-
-        # Clear MPS cache
+        
         clear_cache()
 
 

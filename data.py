@@ -25,7 +25,7 @@ class TimeSeriesDataset(Dataset):
         return x, y
 
 
-def load_and_preprocess_data(file_path, features=None, max_samples=None, start_idx=0, skip_samples=0):
+def load_and_preprocess_data(file_path, features=None, max_samples=None):
     df = pd.read_csv(file_path)
     
     if features is None:
@@ -43,16 +43,10 @@ def load_and_preprocess_data(file_path, features=None, max_samples=None, start_i
     
     print(f"Using features: {features}")
     
-    # Apply skip and max_samples
-    if skip_samples > 0:
-        df = df.iloc[skip_samples:]
-    
     if max_samples is not None:
-        # Start from start_idx and take max_samples
-        end_idx = min(start_idx + max_samples, len(df))
-        data = df[features].values[start_idx:end_idx]
+        data = df[features].values[-max_samples:].astype(np.float32)
     else:
-        data = df[features].values
+        data = df[features].values.astype(np.float32)
     
     mean = np.mean(data, axis=0, keepdims=True)
     std = np.std(data, axis=0, keepdims=True)
@@ -73,9 +67,11 @@ def create_dataloaders(data, batch_size=BATCH_SIZE, train_split=0.8, val_split=0
     val_dataset = TimeSeriesDataset(val_data, seq_len, pred_len)
     test_dataset = TimeSeriesDataset(test_data, seq_len, pred_len)
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, pin_memory=True)
+    num_workers = 2 if torch.cuda.is_available() or torch.backends.mps.is_available() else 0
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, pin_memory=True, num_workers=num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, pin_memory=True, num_workers=num_workers)
     
     return train_loader, val_loader, test_loader
 
@@ -94,15 +90,10 @@ def denormalize_data(data_norm, mean, std):
 
 
 def load_dataset(file_path, features=None, max_samples=None, batch_size=BATCH_SIZE, 
-                train_split=0.8, val_split=0.1, seq_len=CONTEXT_LENGTH, pred_len=OUT_LENGTH,
-                start_idx=0, skip_samples=0):
-    
-    raw_data, mean, std, features = load_and_preprocess_data(
-        file_path, features, max_samples, start_idx, skip_samples
-    )
+                train_split=0.8, val_split=0.1, seq_len=CONTEXT_LENGTH, pred_len=OUT_LENGTH):
+    raw_data, mean, std, features = load_and_preprocess_data(file_path, features, max_samples)
     data_norm, _, _ = normalize_data(raw_data, mean, std)
     
-    # Ensure tensor is contiguous before creating dataloaders
     data_tensor = torch.tensor(data_norm, dtype=torch.float32).transpose(0, 1).contiguous()
     
     train_loader, val_loader, test_loader = create_dataloaders(

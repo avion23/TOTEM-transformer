@@ -99,14 +99,16 @@ class TotemForecaster:
         
         return dataset_info['normalized_data'], dataset_info['raw_data']
     
-    def tokenize(self, data_norm):
+    def _prepare_data_tensor(self, data_norm):
         if self.mode == 'single':
             data_tensor = torch.tensor(data_norm, dtype=torch.float32).reshape(1, 1, -1)
         else:
             data_tensor = torch.tensor(data_norm, dtype=torch.float32).transpose(0, 1).unsqueeze(0)
         
-        data_tensor = to_device_and_dtype(data_tensor)
-            
+        return to_device_and_dtype(data_tensor)
+    
+    def tokenize(self, data_norm):
+        data_tensor = self._prepare_data_tensor(data_norm)
         chunk_size = 1000
         total_indices = []
         
@@ -163,13 +165,7 @@ class TotemForecaster:
                 return values[:, 0]
     
     def analyze_codebook_usage(self, data_norm):
-        if self.mode == 'single':
-            data_tensor = torch.tensor(data_norm, dtype=torch.float32).reshape(1, 1, -1)
-        else:
-            data_tensor = torch.tensor(data_norm, dtype=torch.float32).transpose(0, 1).unsqueeze(0)
-        
-        data_tensor = to_device_and_dtype(data_tensor)
-            
+        data_tensor = self._prepare_data_tensor(data_norm)
         chunk_size = 1000
         indices_list = []
         
@@ -226,11 +222,18 @@ def main():
         forecaster.load_models(args.vqvae, args.transformer)
         
         data_path = args.data
-        if not os.path.exists(data_path) and os.path.exists('data'):
-            data_files = [f for f in os.listdir('data') if f.endswith('.csv')]
-            if data_files:
-                data_path = os.path.join('data', data_files[0])
-                print(f"Using data file: {data_path}")
+        if not os.path.exists(data_path):
+            if os.path.exists('data'):
+                data_files = [f for f in os.listdir('data') if f.endswith('.csv')]
+                if data_files:
+                    data_path = os.path.join('data', data_files[0])
+                    print(f"Using data file: {data_path}")
+                else:
+                    print("No data files found in 'data' directory.")
+                    return
+            else:
+                print(f"Error: Data file {data_path} not found")
+                return
                 
         data_norm, raw_data = forecaster.load_data(data_path)
         tokens = forecaster.tokenize(data_norm)

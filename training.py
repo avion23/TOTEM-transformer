@@ -19,18 +19,14 @@ class Logger:
             
             self.metrics[phase][key].append(value)
             
-        # Update the latest metrics file instead of creating a new one for each epoch
-        if epoch is not None:
             log_path = os.path.join(self.log_dir, f'{phase}_metrics_latest.json')
             
-            # Save all metrics with epoch info
             full_metrics = self.metrics[phase].copy()
             full_metrics['current_epoch'] = epoch
             
             with open(log_path, 'w') as f:
                 json.dump(full_metrics, f)
                 
-            # Also save a checkpoint version at specified intervals
             if epoch % 10 == 0 or epoch == 0:
                 checkpoint_path = os.path.join(self.log_dir, f'{phase}_metrics_epoch_{epoch}.json')
                 with open(checkpoint_path, 'w') as f:
@@ -43,22 +39,6 @@ class Logger:
 
 def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR, 
                 weight_decay=WEIGHT_DECAY, device=DEVICE, save_dir='models'):
-    """
-    Train a VQVAE model.
-    
-    Args:
-        vqvae: VQVAE model
-        train_loader: DataLoader for training data
-        val_loader: DataLoader for validation data (optional)
-        epochs: Number of training epochs
-        learning_rate: Learning rate
-        weight_decay: Weight decay
-        device: Device to train on
-        save_dir: Directory to save models
-        
-    Returns:
-        Trained VQVAE model and training metrics
-    """
     os.makedirs(save_dir, exist_ok=True)
     logger = Logger(os.path.join(save_dir, 'logs'))
     
@@ -67,7 +47,6 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
     
     vqvae = vqvae.to(device)
     
-    # Enable float16 if configured
     if USE_FLOAT16 and device != "cpu":
         vqvae = vqvae.to(torch.float16)
     
@@ -76,7 +55,6 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
     for epoch in range(epochs):
         print(f"Epoch {epoch+1}/{epochs}")
         
-        # Training
         vqvae.train()
         train_recon_loss = 0
         train_vq_loss = 0
@@ -87,7 +65,6 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
             x = data[0] if isinstance(data, (list, tuple)) else data
             x = x.to(device)
             
-            # Convert to float16 if enabled
             if USE_FLOAT16 and device != "cpu":
                 x = x.to(torch.float16)
             
@@ -105,7 +82,6 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
             train_perplexity += perplexity.item()
             train_batches += 1
         
-        # Calculate average metrics
         train_recon_loss /= train_batches
         train_vq_loss /= train_batches
         train_perplexity /= train_batches
@@ -117,14 +93,12 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
             'perplexity': train_perplexity
         }
         
-        # Log training metrics
         logger.log('train', train_metrics, epoch)
         
         print(f"Train Loss: {train_metrics['total_loss']:.6f}, "
               f"Recon: {train_recon_loss:.6f}, VQ: {train_vq_loss:.6f}, "
               f"Perplexity: {train_perplexity:.2f}")
         
-        # Validation
         if val_loader is not None:
             vqvae.eval()
             val_recon_loss = 0
@@ -137,7 +111,6 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
                     x = data[0] if isinstance(data, (list, tuple)) else data
                     x = x.to(device)
                     
-                    # Convert to float16 if enabled
                     if USE_FLOAT16 and device != "cpu":
                         x = x.to(torch.float16)
                     
@@ -149,7 +122,6 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
                     val_perplexity += perplexity.item()
                     val_batches += 1
             
-            # Calculate average metrics
             val_recon_loss /= val_batches
             val_vq_loss /= val_batches
             val_perplexity /= val_batches
@@ -162,28 +134,23 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
                 'perplexity': val_perplexity
             }
             
-            # Log validation metrics
             logger.log('val', val_metrics, epoch)
             
             print(f"Val Loss: {val_total_loss:.6f}, "
                   f"Recon: {val_recon_loss:.6f}, VQ: {val_vq_loss:.6f}, "
                   f"Perplexity: {val_perplexity:.2f}")
             
-            # Save best model
             if val_total_loss < best_val_loss:
                 best_val_loss = val_total_loss
                 torch.save(vqvae.state_dict(), os.path.join(save_dir, 'best_vqvae.pt'))
                 print(f"Saved best model with val loss {best_val_loss:.6f}")
         
-        # Save checkpoint
         if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
             torch.save(vqvae.state_dict(), os.path.join(save_dir, f'vqvae_epoch_{epoch+1}.pt'))
         
-        # Clear cache for MPS if available
         if device == "mps" and hasattr(torch.mps, 'empty_cache'):
             torch.mps.empty_cache()
     
-    # Save final model
     torch.save(vqvae.state_dict(), os.path.join(save_dir, 'final_vqvae.pt'))
     logger.save()
     
@@ -192,22 +159,6 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
 
 def train_transformer(transformer, train_loader, val_loader=None, epochs=5, learning_rate=LR,
                      weight_decay=WEIGHT_DECAY, device=DEVICE, save_dir='models'):
-    """
-    Train a transformer model on tokenized data.
-    
-    Args:
-        transformer: Transformer model
-        train_loader: DataLoader for training data
-        val_loader: DataLoader for validation data (optional)
-        epochs: Number of training epochs
-        learning_rate: Learning rate
-        weight_decay: Weight decay
-        device: Device to train on
-        save_dir: Directory to save models
-        
-    Returns:
-        Trained transformer model and training metrics
-    """
     os.makedirs(save_dir, exist_ok=True)
     logger = Logger(os.path.join(save_dir, 'logs'))
     
@@ -215,7 +166,6 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
     
     transformer = transformer.to(device)
     
-    # Enable float16 if configured
     if USE_FLOAT16 and device != "cpu":
         transformer = transformer.to(torch.float16)
     
@@ -224,7 +174,6 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
     for epoch in range(epochs):
         print(f"Epoch {epoch+1}/{epochs}")
         
-        # Training
         transformer.train()
         train_loss = 0
         train_batches = 0
@@ -234,7 +183,6 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
             x = x.to(device)
             y = y.to(device)
             
-            # Convert to float16 if enabled
             if USE_FLOAT16 and device != "cpu":
                 x = x.to(torch.float16)
                 y = y.to(torch.float16)
@@ -249,19 +197,16 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
             train_loss += loss.item()
             train_batches += 1
         
-        # Calculate average metrics
         train_loss /= train_batches
         
         train_metrics = {
             'loss': train_loss
         }
         
-        # Log training metrics
         logger.log('train', train_metrics, epoch)
         
         print(f"Train Loss: {train_loss:.6f}")
         
-        # Validation
         if val_loader is not None:
             transformer.eval()
             val_loss = 0
@@ -273,7 +218,6 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
                     x = x.to(device)
                     y = y.to(device)
                     
-                    # Convert to float16 if enabled
                     if USE_FLOAT16 and device != "cpu":
                         x = x.to(torch.float16)
                         y = y.to(torch.float16)
@@ -283,63 +227,50 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
                     val_loss += loss.item()
                     val_batches += 1
             
-            # Calculate average metrics
             val_loss /= val_batches
             
             val_metrics = {
                 'loss': val_loss
             }
             
-            # Log validation metrics
             logger.log('val', val_metrics, epoch)
             
             print(f"Val Loss: {val_loss:.6f}")
             
-            # Save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save(transformer.state_dict(), os.path.join(save_dir, 'best_transformer.pt'))
                 print(f"Saved best model with val loss {best_val_loss:.6f}")
         
-        # Save checkpoint
         if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
             torch.save(transformer.state_dict(), os.path.join(save_dir, f'transformer_epoch_{epoch+1}.pt'))
         
-        # Clear cache for MPS if available
         if device == "mps" and hasattr(torch.mps, 'empty_cache'):
             torch.mps.empty_cache()
     
-    # Save final model
     torch.save(transformer.state_dict(), os.path.join(save_dir, 'final_transformer.pt'))
     logger.save()
     
     return transformer, logger.metrics
 
 
-def reset_dead_codebook_entries(vqvae, data_loader, reset_threshold=0.01, device=DEVICE):
-    """
-    Reset unused codebook entries with noisy copies of active ones.
-    
-    Args:
-        vqvae: VQVAE model
-        data_loader: DataLoader for data
-        reset_threshold: Threshold for considering entries as dead (percentage)
-        device: Device to run on
-        
-    Returns:
-        Number of reset entries and updated model
-    """
+def reset_dead_codebook_entries(vqvae, data_loader, reset_threshold=0.01, device=DEVICE, sample_fraction=0.1):
     vqvae.eval()
     
     token_counts = torch.zeros(vqvae.num_embeddings, device=device)
     total_tokens = 0
     
     with torch.no_grad():
-        for data in data_loader:
+        sample_size = int(len(data_loader) * sample_fraction)
+        sampled_batches = np.random.choice(len(data_loader), sample_size, replace=False)
+        
+        for i, data in enumerate(tqdm(data_loader, desc="Scanning codebook")):
+            if i not in sampled_batches:
+                continue
+                
             x = data[0] if isinstance(data, (list, tuple)) else data
             x = x.to(device)
             
-            # Convert to float16 if enabled
             if USE_FLOAT16 and device != "cpu":
                 x = x.to(torch.float16)
                 
@@ -358,10 +289,8 @@ def reset_dead_codebook_entries(vqvae, data_loader, reset_threshold=0.01, device
     if n_dead > 0:
         print(f"Found {n_dead} dead codebook entries")
         
-        # Find most used tokens
         top_indices = torch.argsort(usage_pct, descending=True)[:n_dead]
         
-        # Reset dead entries with noisy copies of active ones
         vqvae.vq._embedding.weight.requires_grad = False
         
         for i, dead_idx in enumerate(dead_indices):
@@ -382,21 +311,6 @@ def reset_dead_codebook_entries(vqvae, data_loader, reset_threshold=0.01, device
 
 def fine_tune_codebook(vqvae, train_loader, epochs=3, learning_rate=0.0001, 
                       reset_every=1, device=DEVICE, save_dir='models'):
-    """
-    Fine-tune VQVAE codebook to improve utilization.
-    
-    Args:
-        vqvae: VQVAE model
-        train_loader: DataLoader for training data
-        epochs: Number of training epochs
-        learning_rate: Learning rate
-        reset_every: How often to reset dead entries (in epochs)
-        device: Device to train on
-        save_dir: Directory to save models
-        
-    Returns:
-        Fine-tuned VQVAE model
-    """
     os.makedirs(save_dir, exist_ok=True)
     
     optimizer = torch.optim.Adam(vqvae.parameters(), lr=learning_rate)
@@ -404,18 +318,14 @@ def fine_tune_codebook(vqvae, train_loader, epochs=3, learning_rate=0.0001,
     
     vqvae = vqvae.to(device)
     
-    # Enable float16 if configured
     if USE_FLOAT16 and device != "cpu":
         vqvae = vqvae.to(torch.float16)
+    
+    reset_dead_codebook_entries(vqvae, train_loader, device=device, sample_fraction=0.2)
     
     for epoch in range(epochs):
         print(f"Fine-tuning epoch {epoch+1}/{epochs}")
         
-        # Reset dead entries
-        if epoch % reset_every == 0:
-            reset_dead_codebook_entries(vqvae, train_loader, device=device)
-        
-        # Training
         vqvae.train()
         train_loss = 0
         train_recon_loss = 0
@@ -427,7 +337,6 @@ def fine_tune_codebook(vqvae, train_loader, epochs=3, learning_rate=0.0001,
             x = data[0] if isinstance(data, (list, tuple)) else data
             x = x.to(device)
             
-            # Convert to float16 if enabled
             if USE_FLOAT16 and device != "cpu":
                 x = x.to(torch.float16)
             
@@ -446,7 +355,6 @@ def fine_tune_codebook(vqvae, train_loader, epochs=3, learning_rate=0.0001,
             train_perplexity += perplexity.item()
             train_batches += 1
         
-        # Calculate average metrics
         train_loss /= train_batches
         train_recon_loss /= train_batches
         train_vq_loss /= train_batches
@@ -455,29 +363,15 @@ def fine_tune_codebook(vqvae, train_loader, epochs=3, learning_rate=0.0001,
         print(f"Loss: {train_loss:.6f}, Recon: {train_recon_loss:.6f}, "
               f"VQ: {train_vq_loss:.6f}, Perplexity: {train_perplexity:.2f}")
         
-        # Clear cache for MPS if available
         if device == "mps" and hasattr(torch.mps, 'empty_cache'):
             torch.mps.empty_cache()
     
-    # Save fine-tuned model
     torch.save(vqvae.state_dict(), os.path.join(save_dir, 'vqvae_fine_tuned.pt'))
     
     return vqvae
 
 
 def create_token_dataset(vqvae, data_loader, context_length=CONTEXT_LENGTH, device=DEVICE):
-    """
-    Create a dataset of token indices for transformer training.
-    
-    Args:
-        vqvae: Trained VQVAE model
-        data_loader: DataLoader for data
-        context_length: Context length for transformer
-        device: Device to run on
-        
-    Returns:
-        Tensor of token indices
-    """
     vqvae.eval()
     all_indices = []
     
@@ -486,11 +380,9 @@ def create_token_dataset(vqvae, data_loader, context_length=CONTEXT_LENGTH, devi
             x = data[0] if isinstance(data, (list, tuple)) else data
             x = x.to(device)
             
-            # Convert to float16 if enabled
             if USE_FLOAT16 and device != "cpu":
                 x = x.to(torch.float16)
             
-            # Process in chunks if needed
             if x.shape[2] > 1000:
                 indices_list = []
                 for i in range(0, x.shape[2], 1000):
@@ -506,7 +398,6 @@ def create_token_dataset(vqvae, data_loader, context_length=CONTEXT_LENGTH, devi
     
     all_indices = torch.cat(all_indices, dim=1).squeeze(0)
     
-    # Create sequences for training
     sequences = []
     for i in range(len(all_indices) - context_length):
         seq = all_indices[i:i+context_length]
