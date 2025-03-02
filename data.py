@@ -17,11 +17,11 @@ class TimeSeriesDataset(Dataset):
     
     def __getitem__(self, idx):
         i = self.indices[idx]
-        x = self.data[:, i:i+self.seq_len]
+        x = self.data[:, i:i+self.seq_len].contiguous()
         if self.pred_len == 1:
-            y = self.data[:, i+1:i+self.seq_len+1]
+            y = self.data[:, i+1:i+self.seq_len+1].contiguous()
         else:
-            y = self.data[:, i+self.seq_len:i+self.seq_len+self.pred_len]
+            y = self.data[:, i+self.seq_len:i+self.seq_len+self.pred_len].contiguous()
         return x, y
 
 
@@ -59,9 +59,9 @@ def create_dataloaders(data, batch_size=BATCH_SIZE, train_split=0.8, val_split=0
     train_size = int(n * train_split)
     val_size = int(n * val_split)
     
-    train_data = data[:, :train_size]
-    val_data = data[:, train_size:train_size+val_size]
-    test_data = data[:, train_size+val_size:]
+    train_data = data[:, :train_size].contiguous()
+    val_data = data[:, train_size:train_size+val_size].contiguous()
+    test_data = data[:, train_size+val_size:].contiguous()
     
     train_dataset = TimeSeriesDataset(train_data, seq_len, pred_len)
     val_dataset = TimeSeriesDataset(val_data, seq_len, pred_len)

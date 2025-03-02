@@ -101,9 +101,9 @@ class TotemForecaster:
     
     def _prepare_data_tensor(self, data_norm):
         if self.mode == 'single':
-            data_tensor = torch.tensor(data_norm, dtype=torch.float32).reshape(1, 1, -1)
+            data_tensor = torch.tensor(data_norm, dtype=torch.float32).reshape(1, 1, -1).contiguous()
         else:
-            data_tensor = torch.tensor(data_norm, dtype=torch.float32).transpose(0, 1).unsqueeze(0)
+            data_tensor = torch.tensor(data_norm, dtype=torch.float32).transpose(0, 1).unsqueeze(0).contiguous()
         
         return to_device_and_dtype(data_tensor)
     
@@ -114,7 +114,7 @@ class TotemForecaster:
         
         with torch.no_grad():
             for i in range(0, data_tensor.shape[2], chunk_size):
-                chunk = data_tensor[:, :, i:i+chunk_size]
+                chunk = data_tensor[:, :, i:i+chunk_size].contiguous()
                 indices = self.vqvae.encode(chunk, normalize=False)
                 total_indices.append(indices.squeeze().cpu().numpy())
         
@@ -127,7 +127,7 @@ class TotemForecaster:
         seq_len = min(CONTEXT_LENGTH, len(indices))
         seed = indices[-seq_len:]
         
-        seed_tensor = torch.tensor(seed, dtype=torch.long).unsqueeze(0).to(self.device)
+        seed_tensor = torch.tensor(seed, dtype=torch.long).unsqueeze(0).to(self.device).contiguous()
         
         with torch.no_grad():
             forecast = self.transformer.generate(
@@ -142,11 +142,11 @@ class TotemForecaster:
         return forecast_tokens
     
     def decode_forecast(self, tokens):
-        token_tensor = torch.tensor([tokens], dtype=torch.long).to(self.device)
+        token_tensor = torch.tensor([tokens], dtype=torch.long).to(self.device).contiguous()
         
         revin_stats = {
-            'mean': torch.tensor(self.dataset_info['mean'], dtype=torch.float32).to(self.device),
-            'std': torch.tensor(self.dataset_info['std'], dtype=torch.float32).to(self.device)
+            'mean': torch.tensor(self.dataset_info['mean'], dtype=torch.float32).to(self.device).contiguous(),
+            'std': torch.tensor(self.dataset_info['std'], dtype=torch.float32).to(self.device).contiguous()
         }
         
         if USE_FLOAT16 and self.device != "cpu":
@@ -171,7 +171,7 @@ class TotemForecaster:
         
         with torch.no_grad():
             for i in range(0, data_tensor.shape[2], chunk_size):
-                chunk = data_tensor[:, :, i:i+chunk_size]
+                chunk = data_tensor[:, :, i:i+chunk_size].contiguous()
                 _, _, indices, _ = self.vqvae(chunk, normalize=False)
                 indices_list.append(indices.cpu().numpy())
         

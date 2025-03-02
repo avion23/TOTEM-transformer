@@ -7,7 +7,7 @@ from vqvae import VQVAE
 from nanogpt import NanoGPT
 from data import load_dataset
 from training import train_vqvae, train_transformer, fine_tune_codebook, create_token_dataset
-from analysis import analyze_codebook, analyze_reconstruction
+from analysis import analyze_codebook
 from utils import to_device_and_dtype, clear_cache
 from config import *
 from run_totem import TotemForecaster
@@ -64,7 +64,10 @@ def main():
             num_hiddens=NUM_HIDDENS,
             num_residual_layers=NUM_RESIDUAL_LAYERS,
             num_residual_hiddens=NUM_RESIDUAL_HIDDENS
-        )
+        ).to(DEVICE)
+        
+        if USE_FLOAT16 and DEVICE != "cpu":
+            vqvae = vqvae.to(torch.float16)
         
         print("Training VQVAE model...")
         vqvae, metrics = train_vqvae(
@@ -104,10 +107,9 @@ def main():
         recon = x_recon.squeeze().transpose(0, 1).contiguous().numpy()
         indices = indices.squeeze().numpy()
         
-        recon_metrics = analyze_reconstruction(eval_data, recon)
-        print(f"Reconstruction MSE: {recon_metrics['mse']:.6f}")
-        if recon_metrics['scale_error'] is not None:
-            print(f"Scale error: {recon_metrics['scale_error']:.6f}")
+        # Calculate simple MSE
+        mse = np.mean((eval_data - recon)**2)
+        print(f"Reconstruction MSE: {mse:.6f}")
         
         codebook_metrics = analyze_codebook(indices)
         print(f"Active tokens: {codebook_metrics['active_tokens']}/{CODEBOOK_SIZE}")
@@ -152,7 +154,10 @@ def main():
             num_heads=NUM_HEADS,
             num_layers=NUM_LAYERS,
             dropout=DROPOUT
-        )
+        ).to(DEVICE)
+        
+        if USE_FLOAT16 and DEVICE != "cpu":
+            transformer = transformer.to(torch.float16)
         
         print("Training transformer model...")
         transformer, metrics = train_transformer(
@@ -172,9 +177,17 @@ def main():
             print(f"Error: VQVAE model {args.vqvae_path} not found")
             return
         
-        vqvae = VQVAE(in_channels=in_channels)
-        vqvae = to_device_and_dtype(vqvae)
-        vqvae.load_state_dict(torch.load(args.vqvae_path, map_location=DEVICE, weights_only=True))
+        vqvae = VQVAE(in_channels=in_channels).to(DEVICE)
+        
+        if USE_FLOAT16 and DEVICE != "cpu":
+            vqvae = vqvae.to(torch.float16)
+            
+        try:
+            vqvae.load_state_dict(torch.load(args.vqvae_path, map_location=DEVICE))
+            print(f"Successfully loaded VQVAE from {args.vqvae_path}")
+        except Exception as e:
+            print(f"Error loading VQVAE: {e}")
+            return
         
         print("Fine-tuning VQVAE codebook...")
         vqvae = fine_tune_codebook(

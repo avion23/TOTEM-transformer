@@ -43,59 +43,6 @@ def process_in_chunks(vqvae, data_tensor, chunk_size=1000, normalize=False):
     }
 
 
-def analyze_reconstruction(original, reconstruction, per_sample_stats=None):
-    mse = np.mean((original - reconstruction)**2)
-    rmse = np.sqrt(mse)
-    
-    if per_sample_stats is not None:
-        denorm_orig = []
-        denorm_recon = []
-        
-        for i in range(len(original)):
-            mean, std = per_sample_stats[i]
-            denorm_orig.append(original[i] * std + mean)
-            denorm_recon.append(reconstruction[i] * std + mean)
-            
-        denorm_orig = np.array(denorm_orig)
-        denorm_recon = np.array(denorm_recon)
-        
-        scale_error = np.mean((denorm_orig - denorm_recon)**2)
-        scale_rmse = np.sqrt(scale_error)
-    else:
-        scale_error = None
-        scale_rmse = None
-        
-    metrics = {
-        'mse': mse,
-        'rmse': rmse,
-        'scale_error': scale_error,
-        'scale_rmse': scale_rmse
-    }
-    
-    if original.ndim > 1 and original.shape[1] > 1:
-        feature_metrics = []
-        for i in range(original.shape[1]):
-            feat_mse = np.mean((original[:, i] - reconstruction[:, i])**2)
-            feat_rmse = np.sqrt(feat_mse)
-            
-            if per_sample_stats is not None:
-                feat_scale_error = np.mean((denorm_orig[:, i] - denorm_recon[:, i])**2)
-                feat_scale_rmse = np.sqrt(feat_scale_error)
-            else:
-                feat_scale_error = None
-                feat_scale_rmse = None
-                
-            feature_metrics.append({
-                'mse': feat_mse,
-                'rmse': feat_rmse,
-                'scale_error': feat_scale_error,
-                'scale_rmse': feat_scale_rmse
-            })
-        metrics['feature_metrics'] = feature_metrics
-        
-    return metrics
-
-
 def analyze_codebook(indices, codebook_size=None, model=None):
     if model is not None:
         codebook_size = model.num_embeddings
@@ -128,11 +75,6 @@ def analyze_codebook(indices, codebook_size=None, model=None):
     top_tokens = [(idx, token_counts[idx], token_counts[idx]/total_tokens*100) 
                  for idx in top_indices]
     
-    sorted_norm = np.sort(probs)
-    n = len(sorted_norm)
-    index = np.arange(1, n + 1)
-    gini = np.sum((2 * index - n - 1) * sorted_norm) / (n * np.sum(sorted_norm))
-    
     metrics = {
         'codebook_size': codebook_size,
         'active_tokens': active_tokens,
@@ -140,7 +82,6 @@ def analyze_codebook(indices, codebook_size=None, model=None):
         'unused_tokens': codebook_size - active_tokens,
         'entropy': entropy,
         'normalized_entropy': normalized_entropy,
-        'gini_coefficient': gini,
         'tokens_50pct': tokens_50pct,
         'tokens_80pct': tokens_80pct,
         'tokens_90pct': tokens_90pct,
@@ -149,75 +90,3 @@ def analyze_codebook(indices, codebook_size=None, model=None):
     }
     
     return metrics
-
-
-def analyze_sequence_diversity(indices, seq_lengths=[2, 3, 4], codebook_size=None, model=None):
-    if model is not None:
-        codebook_size = model.num_embeddings
-    elif codebook_size is None:
-        codebook_size = CODEBOOK_SIZE
-    
-    flat_indices = indices.flatten()
-    
-    metrics = {}
-    
-    for seq_len in seq_lengths:
-        sequences = []
-        for i in range(len(flat_indices) - seq_len + 1):
-            sequences.append(tuple(flat_indices[i:i+seq_len]))
-        
-        unique_sequences = set(sequences)
-        total_sequences = len(sequences)
-        
-        diversity = len(unique_sequences) / total_sequences * 100
-        max_possible = min(total_sequences, codebook_size ** seq_len)
-        normalized_diversity = len(unique_sequences) / max_possible * 100
-        
-        sequence_counts = {}
-        for seq in sequences:
-            if seq in sequence_counts:
-                sequence_counts[seq] += 1
-            else:
-                sequence_counts[seq] = 1
-        
-        sorted_seqs = sorted(sequence_counts.items(), key=lambda x: x[1], reverse=True)
-        top_sequences = [(seq, count, count/total_sequences*100) 
-                        for seq, count in sorted_seqs[:5]]
-        
-        seq_probs = np.array([count/total_sequences for _, count in sequence_counts.items()])
-        seq_entropy = -np.sum(seq_probs * np.log2(seq_probs))
-        
-        metrics[f'length_{seq_len}'] = {
-            'total_sequences': total_sequences,
-            'unique_sequences': len(unique_sequences),
-            'diversity': diversity,
-            'normalized_diversity': normalized_diversity,
-            'sequence_entropy': seq_entropy,
-            'top_sequences': top_sequences
-        }
-    
-    return metrics
-
-
-def evaluate_vqvae(vqvae, data_tensor, normalize=True, chunk_size=1000):
-    results = process_in_chunks(vqvae, data_tensor, chunk_size=chunk_size, normalize=normalize)
-    indices = results['indices']
-    recon = results['reconstruction']
-    
-    recon_metrics = analyze_reconstruction(
-        data_tensor.cpu().numpy().transpose(0, 2, 1).squeeze(),
-        recon.transpose(0, 2, 1).squeeze(),
-        results['revin_stats']
-    )
-    
-    codebook_metrics = analyze_codebook(indices, model=vqvae)
-    
-    sequence_metrics = analyze_sequence_diversity(indices, model=vqvae)
-    
-    clear_cache()
-    
-    return {
-        'reconstruction': recon_metrics,
-        'codebook': codebook_metrics,
-        'sequence': sequence_metrics
-    }

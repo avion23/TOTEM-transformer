@@ -62,18 +62,20 @@ class Encoder(nn.Module):
                                      stride=1)
 
     def forward(self, x):
+        x = x.contiguous()
         if x.size(0) * x.size(1) > 32768:
             outputs = []
             max_batch = max(1, 32768 // x.size(1))
             for i in range(0, x.size(0), max_batch):
                 chunk = x[i:i+max_batch]
                 outputs.append(self._forward_chunk(chunk))
-            x = torch.cat(outputs, dim=0)
+            x = torch.cat(outputs, dim=0).contiguous()
             return x
         else:
             return self._forward_chunk(x)
 
     def _forward_chunk(self, x):
+        x = x.contiguous()
         x = self._conv_1(x)
         x = F.relu(x)
         
@@ -84,7 +86,7 @@ class Encoder(nn.Module):
         x = self._residual_stack(x)
         x = self._pre_vq_conv(x)
         
-        return x
+        return x.contiguous()
 
 
 class Decoder(nn.Module):
@@ -111,18 +113,20 @@ class Decoder(nn.Module):
                                               stride=2, padding=1)
 
     def forward(self, x):
+        x = x.contiguous()
         if x.size(0) * x.size(1) > 32768:
             outputs = []
             max_batch = max(1, 32768 // x.size(1))
             for i in range(0, x.size(0), max_batch):
                 chunk = x[i:i+max_batch]
                 outputs.append(self._forward_chunk(chunk))
-            x = torch.cat(outputs, dim=0)
+            x = torch.cat(outputs, dim=0).contiguous()
             return x
         else:
             return self._forward_chunk(x)
 
     def _forward_chunk(self, x):
+        x = x.contiguous()
         x = self._conv_1(x)
         x = self._residual_stack(x)
         
@@ -131,7 +135,7 @@ class Decoder(nn.Module):
         
         x = self._conv_trans_2(x)
         
-        return x
+        return x.contiguous()
 
 
 class VectorQuantizer(nn.Module):
@@ -144,6 +148,7 @@ class VectorQuantizer(nn.Module):
         self._commitment_cost = commitment_cost
         
     def forward(self, inputs):
+        inputs = inputs.contiguous()
         if inputs.size(0) * inputs.size(2) * self._num_embeddings > 65536:
             return self._forward_chunked(inputs)
         else:
@@ -153,7 +158,7 @@ class VectorQuantizer(nn.Module):
         inputs = inputs.permute(0, 2, 1).contiguous()
         input_shape = inputs.shape
         
-        flat_input = inputs.reshape(-1, self._embedding_dim)
+        flat_input = inputs.reshape(-1, self._embedding_dim).contiguous()
         
         distances = (torch.sum(flat_input**2, dim=1, keepdim=True) 
                     + torch.sum(self._embedding.weight**2, dim=1)
@@ -163,8 +168,7 @@ class VectorQuantizer(nn.Module):
         encodings = torch.zeros(encoding_indices.shape[0], self._num_embeddings, device=inputs.device)
         encodings.scatter_(1, encoding_indices, 1)
         
-        quantized = torch.matmul(encodings, self._embedding.weight)
-        quantized = quantized.reshape(input_shape)
+        quantized = torch.matmul(encodings, self._embedding.weight).reshape(input_shape).contiguous()
         
         e_latent_loss = F.mse_loss(quantized.detach(), inputs)
         q_latent_loss = F.mse_loss(quantized, inputs.detach())
@@ -176,7 +180,7 @@ class VectorQuantizer(nn.Module):
         avg_probs = torch.mean(encodings, dim=0)
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
         
-        encoding_indices = encoding_indices.reshape(input_shape[0], -1)
+        encoding_indices = encoding_indices.reshape(input_shape[0], -1).contiguous()
         
         return quantized, loss, encoding_indices, perplexity
     
@@ -192,13 +196,13 @@ class VectorQuantizer(nn.Module):
         total_loss = 0
         total_samples = 0
         
-        flat_input = inputs.reshape(-1, self._embedding_dim)
+        flat_input = inputs.reshape(-1, self._embedding_dim).contiguous()
         num_chunks = (flat_input.size(0) + chunk_size - 1) // chunk_size
         
         for i in range(num_chunks):
             start_idx = i * chunk_size
             end_idx = min((i+1) * chunk_size, flat_input.size(0))
-            chunk = flat_input[start_idx:end_idx]
+            chunk = flat_input[start_idx:end_idx].contiguous()
             
             distances = (torch.sum(chunk**2, dim=1, keepdim=True) 
                       + torch.sum(self._embedding.weight**2, dim=1)
@@ -224,20 +228,26 @@ class VectorQuantizer(nn.Module):
             if i % 10 == 0 and i > 0:
                 clear_cache()
         
-        quantized = torch.cat(all_quantized)
-        quantized = quantized.reshape(input_shape)
-        indices = torch.cat(all_indices)
+        quantized = torch.cat(all_quantized).contiguous()
+        quantized = quantized.reshape(input_shape).contiguous()
+        indices = torch.cat(all_indices, dim=0).contiguous()
         avg_loss = total_loss / total_samples
         
-        encodings = torch.zeros(indices.shape[0], self._num_embeddings, device=inputs.device)
-        for i in range(indices.shape[0]):
-            encodings[i, indices[i, 0]] = 1
-        
-        avg_probs = torch.mean(encodings, dim=0)
-        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+        if indices.numel() > 0:
+            batch_size = input_shape[0]
+            seq_len = indices.shape[0] // batch_size
+            indices = indices.reshape(batch_size, seq_len).contiguous()
+            
+            encodings_sum = torch.zeros(self._num_embeddings, device=inputs.device)
+            for i in range(indices.shape[0]):
+                encodings_sum.index_add_(0, indices[i].flatten(), torch.ones(indices[i].numel(), device=inputs.device))
+            
+            avg_probs = encodings_sum / (indices.shape[0] * indices.shape[1])
+            perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+        else:
+            perplexity = torch.tensor(0.0, device=inputs.device)
         
         quantized = quantized.permute(0, 2, 1).contiguous()
-        indices = indices.reshape(input_shape[0], -1)
         
         return quantized, avg_loss, indices, perplexity
 
@@ -250,10 +260,6 @@ class RevIN(nn.Module):
         self.affine = affine
         self.means = None
         self.stds = None
-        
-        if self.affine:
-            self.affine_weight = nn.Parameter(torch.ones(self.num_features))
-            self.affine_bias = nn.Parameter(torch.zeros(self.num_features))
     
     def normalize(self, x):
         x = x.contiguous()
@@ -261,17 +267,10 @@ class RevIN(nn.Module):
         self.stds = torch.sqrt(x.var(dim=2, keepdim=True, unbiased=False) + self.eps).detach()
         
         x_norm = (x - self.means) / self.stds
-        
-        if self.affine:
-            x_norm = x_norm * self.affine_weight.reshape(1, -1, 1) + self.affine_bias.reshape(1, -1, 1)
-            
-        return x_norm
+        return x_norm.contiguous()
     
     def denormalize(self, x, means=None, stds=None):
         x = x.contiguous()
-        if self.affine:
-            x = (x - self.affine_bias.reshape(1, -1, 1)) / (self.affine_weight.reshape(1, -1, 1) + self.eps)
-        
         means = means if means is not None else self.means
         stds = stds if stds is not None else self.stds
         
@@ -279,7 +278,7 @@ class RevIN(nn.Module):
             raise ValueError("No normalization statistics available for denormalization")
             
         x = x * stds + means
-        return x
+        return x.contiguous()
 
 
 class VQVAE(nn.Module):
@@ -314,7 +313,7 @@ class VQVAE(nn.Module):
         if normalize:
             x_norm = self.revin.normalize(x)
         else:
-            x_norm = x
+            x_norm = x.clone().contiguous()
         
         if x_norm.size(0) * x_norm.size(1) > 16384:
             batch_size = max(1, 16384 // x_norm.size(1))
@@ -324,25 +323,47 @@ class VQVAE(nn.Module):
             perplexities = []
             
             for i in range(0, x_norm.size(0), batch_size):
-                chunk = x_norm[i:i+batch_size]
+                chunk = x_norm[i:i+batch_size].contiguous()
                 z = self.encoder(chunk)
-                q, vq_loss, idx, perp = self.vq(z)
-                recon = self.decoder(q)
+                try:
+                    q, vq_loss, idx, perp = self.vq(z)
+                    recon = self.decoder(q)
+                    
+                    outputs.append(recon)
+                    vq_losses.append(vq_loss)
+                    indices_list.append(idx)
+                    perplexities.append(perp)
+                except RuntimeError as e:
+                    if "view size is not compatible" in str(e):
+                        z = z.contiguous()
+                        q, vq_loss, idx, perp = self.vq(z.reshape(z.shape))
+                        recon = self.decoder(q)
+                        
+                        outputs.append(recon)
+                        vq_losses.append(vq_loss)
+                        indices_list.append(idx)
+                        perplexities.append(perp)
+                    else:
+                        raise e
                 
-                outputs.append(recon)
-                vq_losses.append(vq_loss)
-                indices_list.append(idx)
-                perplexities.append(perp)
                 clear_cache()
             
-            x_recon = torch.cat(outputs, dim=0)
+            x_recon = torch.cat(outputs, dim=0).contiguous()
             vq_loss = sum(vq_losses) / len(vq_losses)
-            indices = torch.cat(indices_list, dim=0)
+            indices = torch.cat(indices_list, dim=0).contiguous()
             perplexity = sum(perplexities) / len(perplexities)
         else:
             z = self.encoder(x_norm)
-            quantized, vq_loss, indices, perplexity = self.vq(z)
-            x_recon = self.decoder(quantized)
+            try:
+                quantized, vq_loss, indices, perplexity = self.vq(z)
+                x_recon = self.decoder(quantized)
+            except RuntimeError as e:
+                if "view size is not compatible" in str(e):
+                    z = z.contiguous()
+                    quantized, vq_loss, indices, perplexity = self.vq(z.reshape(z.shape))
+                    x_recon = self.decoder(quantized)
+                else:
+                    raise e
         
         if normalize:
             x_recon = self.revin.denormalize(x_recon)
@@ -354,57 +375,75 @@ class VQVAE(nn.Module):
         if normalize:
             x_norm = self.revin.normalize(x)
         else:
-            x_norm = x
+            x_norm = x.clone().contiguous()
         
         if x_norm.size(0) * x_norm.size(1) > 16384:
             batch_size = max(1, 16384 // x_norm.size(1))
             indices_list = []
             
             for i in range(0, x_norm.size(0), batch_size):
-                chunk = x_norm[i:i+batch_size]
+                chunk = x_norm[i:i+batch_size].contiguous()
                 z = self.encoder(chunk)
-                _, _, idx, _ = self.vq(z)
-                indices_list.append(idx)
+                try:
+                    _, _, idx, _ = self.vq(z)
+                    indices_list.append(idx)
+                except RuntimeError as e:
+                    if "view size is not compatible" in str(e):
+                        z = z.contiguous()
+                        _, _, idx, _ = self.vq(z.reshape(z.shape))
+                        indices_list.append(idx)
+                    else:
+                        raise e
+                
                 clear_cache()
             
-            return torch.cat(indices_list, dim=0)
+            return torch.cat(indices_list, dim=0).contiguous()
         else:
             z = self.encoder(x_norm)
-            _, _, indices, _ = self.vq(z)
-            return indices
+            try:
+                _, _, indices, _ = self.vq(z)
+            except RuntimeError as e:
+                if "view size is not compatible" in str(e):
+                    z = z.contiguous()
+                    _, _, indices, _ = self.vq(z.reshape(z.shape))
+                else:
+                    raise e
+            
+            return indices.contiguous()
     
     def decode(self, indices, means=None, stds=None):
         device = indices.device
+        indices = indices.contiguous()
         
         if indices.size(0) * indices.size(1) * self.num_embeddings > 65536:
             batch_size = max(1, 65536 // (indices.size(1) * self.num_embeddings))
             outputs = []
             
             for i in range(0, indices.size(0), batch_size):
-                chunk_indices = indices[i:i+batch_size]
+                chunk_indices = indices[i:i+batch_size].contiguous()
                 
-                encodings = torch.zeros(chunk_indices.shape[0], chunk_indices.shape[1], self.num_embeddings, device=device)
-                for j in range(chunk_indices.shape[0]):
-                    encodings[j].scatter_(1, chunk_indices[j].unsqueeze(1), 1)
+                one_hot = F.one_hot(chunk_indices, num_classes=self.num_embeddings).float()
+                one_hot = one_hot.view(one_hot.size(0), -1, self.num_embeddings).contiguous()
+                one_hot = one_hot.transpose(1, 2).contiguous()
                 
                 embedding_weight = self.vq._embedding.weight.to(device)
-                quantized = torch.matmul(encodings, embedding_weight)
-                quantized = quantized.permute(0, 2, 1).contiguous()
+                quantized = torch.bmm(one_hot, embedding_weight.expand(one_hot.size(0), -1, -1))
+                quantized = quantized.transpose(1, 2).contiguous()
                 
                 chunk_recon = self.decoder(quantized)
                 outputs.append(chunk_recon)
                 clear_cache()
             
-            x_recon = torch.cat(outputs, dim=0)
+            x_recon = torch.cat(outputs, dim=0).contiguous()
         else:
             embedding_weight = self.vq._embedding.weight.to(device)
             
-            encodings = torch.zeros(indices.shape[0], indices.shape[1], self.num_embeddings, device=device)
-            for i in range(indices.shape[0]):
-                encodings[i].scatter_(1, indices[i].unsqueeze(1), 1)
+            one_hot = F.one_hot(indices, num_classes=self.num_embeddings).float()
+            one_hot = one_hot.view(one_hot.size(0), -1, self.num_embeddings).contiguous()
+            one_hot = one_hot.transpose(1, 2).contiguous()
             
-            quantized = torch.matmul(encodings, embedding_weight)
-            quantized = quantized.permute(0, 2, 1).contiguous()
+            quantized = torch.bmm(one_hot, embedding_weight.expand(one_hot.size(0), -1, -1))
+            quantized = quantized.transpose(1, 2).contiguous()
             
             x_recon = self.decoder(quantized)
         
@@ -421,11 +460,4 @@ class VQVAE(nn.Module):
             
             x_recon = self.revin.denormalize(x_recon, means, stds)
             
-        return x_recon
-    
-    def get_codebook_stats(self):
-        return {
-            'codebook_size': self.num_embeddings,
-            'embedding_dim': self.embedding_dim,
-            'embeddings': self.vq._embedding.weight.detach().cpu().numpy()
-        }
+        return x_recon.contiguous()

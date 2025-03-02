@@ -11,40 +11,32 @@ class CausalSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = model_dim // num_heads
         
-        # Key, query, value projections
         self.query = nn.Linear(model_dim, model_dim)
         self.key = nn.Linear(model_dim, model_dim)
         self.value = nn.Linear(model_dim, model_dim)
         
-        # Output projection
         self.proj = nn.Linear(model_dim, model_dim)
         
-        # Regularization
         self.attn_dropout = nn.Dropout(dropout)
         self.proj_dropout = nn.Dropout(dropout)
         
-        # Causal mask to ensure we attend only to previous positions
         self.register_buffer("mask", torch.tril(torch.ones(CONTEXT_LENGTH, CONTEXT_LENGTH)))
         
     def forward(self, x):
         B, T, C = x.size()
         
-        # Calculate query, key, values
-        q = self.query(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.key(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.value(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        q = self.query(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+        k = self.key(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+        v = self.value(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
         
-        # Scaled attention
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
         att = att.masked_fill(self.mask[:T, :T] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
         
-        # Apply attention to values
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         
-        # Output projection
         y = self.proj(y)
         y = self.proj_dropout(y)
         
@@ -84,19 +76,15 @@ class NanoGPT(nn.Module):
                  num_layers=NUM_LAYERS, dropout=DROPOUT, context_length=CONTEXT_LENGTH):
         super().__init__()
         
-        # Embed tokens and positions
         self.token_embedding = nn.Embedding(vocab_size, model_dim)
         self.pos_embedding = nn.Parameter(torch.zeros(1, context_length, model_dim))
         self.dropout = nn.Dropout(dropout)
         
-        # Transformer blocks
         self.blocks = nn.ModuleList([Block(model_dim, num_heads, dropout) for _ in range(num_layers)])
         
-        # Final layer norm and head
         self.ln_f = nn.LayerNorm(model_dim)
         self.head = nn.Linear(model_dim, vocab_size, bias=False)
         
-        # Initialize weights
         self.apply(self._init_weights)
         
     def _init_weights(self, module):
@@ -112,52 +100,43 @@ class NanoGPT(nn.Module):
     
     def forward(self, idx, targets=None):
         B, T = idx.size()
+        idx = idx.contiguous()
         
-        # Get embeddings
-        tok_emb = self.token_embedding(idx)  # (B, T, C)
-        pos_emb = self.pos_embedding[:, :T, :]  # (1, T, C)
+        tok_emb = self.token_embedding(idx)
+        pos_emb = self.pos_embedding[:, :T, :]
         x = self.dropout(tok_emb + pos_emb)
         
-        # Apply transformer blocks
         for block in self.blocks:
             x = block(x)
         
-        # Apply final layer norm
         x = self.ln_f(x)
         
-        # Get logits
-        logits = self.head(x)  # (B, T, vocab_size)
+        logits = self.head(x)
         
-        # If we have targets, calculate loss
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            targets = targets.contiguous()
+            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
         
         return logits, loss
     
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        idx = idx.contiguous()
         for _ in range(max_new_tokens):
-            # Crop context if needed
-            idx_cond = idx if idx.size(1) <= CONTEXT_LENGTH else idx[:, -CONTEXT_LENGTH:]
+            idx_cond = idx if idx.size(1) <= CONTEXT_LENGTH else idx[:, -CONTEXT_LENGTH:].contiguous()
             
-            # Get predictions
             logits, _ = self(idx_cond)
             
-            # Focus on the last time step
             logits = logits[:, -1, :] / temperature
             
-            # Optionally crop logits to top-k
             if top_k is not None:
                 v, _ = torch.topk(logits, top_k)
                 logits[logits < v[:, [-1]]] = -float('Inf')
             
-            # Apply softmax
             probs = F.softmax(logits, dim=-1)
             
-            # Sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1)
             
-            # Append to the sequence
-            idx = torch.cat((idx, idx_next), dim=1)
+            idx = torch.cat((idx, idx_next), dim=1).contiguous()
         
         return idx

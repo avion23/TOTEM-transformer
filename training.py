@@ -4,6 +4,7 @@ from tqdm import tqdm
 import os
 import json
 from config import *
+from utils import to_device_and_dtype, clear_cache
 
 
 class Logger:
@@ -63,10 +64,7 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
         
         for data in tqdm(train_loader, desc="Training"):
             x = data[0] if isinstance(data, (list, tuple)) else data
-            x = x.to(device)
-            
-            if USE_FLOAT16 and device != "cpu":
-                x = x.to(torch.float16)
+            x = to_device_and_dtype(x, device).contiguous()
             
             optimizer.zero_grad()
             
@@ -81,6 +79,9 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
             train_vq_loss += vq_loss.item()
             train_perplexity += perplexity.item()
             train_batches += 1
+            
+            if train_batches % 50 == 0:
+                clear_cache()
         
         train_recon_loss /= train_batches
         train_vq_loss /= train_batches
@@ -109,10 +110,7 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
             with torch.no_grad():
                 for data in tqdm(val_loader, desc="Validation"):
                     x = data[0] if isinstance(data, (list, tuple)) else data
-                    x = x.to(device)
-                    
-                    if USE_FLOAT16 and device != "cpu":
-                        x = x.to(torch.float16)
+                    x = to_device_and_dtype(x, device).contiguous()
                     
                     x_recon, vq_loss, _, perplexity = vqvae(x)
                     recon_loss = mse_loss(x_recon, x)
@@ -148,8 +146,7 @@ def train_vqvae(vqvae, train_loader, val_loader=None, epochs=5, learning_rate=LR
         if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
             torch.save(vqvae.state_dict(), os.path.join(save_dir, f'vqvae_epoch_{epoch+1}.pt'))
         
-        if device == "mps" and hasattr(torch.mps, 'empty_cache'):
-            torch.mps.empty_cache()
+        clear_cache()
     
     torch.save(vqvae.state_dict(), os.path.join(save_dir, 'final_vqvae.pt'))
     logger.save()
@@ -180,12 +177,8 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
         
         for data in tqdm(train_loader, desc="Training"):
             x, y = data
-            x = x.to(device)
-            y = y.to(device)
-            
-            if USE_FLOAT16 and device != "cpu":
-                x = x.to(torch.float16)
-                y = y.to(torch.float16)
+            x = to_device_and_dtype(x, device).contiguous()
+            y = to_device_and_dtype(y, device).contiguous()
             
             optimizer.zero_grad()
             
@@ -196,6 +189,9 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
             
             train_loss += loss.item()
             train_batches += 1
+            
+            if train_batches % 50 == 0:
+                clear_cache()
         
         train_loss /= train_batches
         
@@ -215,12 +211,8 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
             with torch.no_grad():
                 for data in tqdm(val_loader, desc="Validation"):
                     x, y = data
-                    x = x.to(device)
-                    y = y.to(device)
-                    
-                    if USE_FLOAT16 and device != "cpu":
-                        x = x.to(torch.float16)
-                        y = y.to(torch.float16)
+                    x = to_device_and_dtype(x, device).contiguous()
+                    y = to_device_and_dtype(y, device).contiguous()
                     
                     logits, loss = transformer(x, y)
                     
@@ -245,8 +237,7 @@ def train_transformer(transformer, train_loader, val_loader=None, epochs=5, lear
         if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
             torch.save(transformer.state_dict(), os.path.join(save_dir, f'transformer_epoch_{epoch+1}.pt'))
         
-        if device == "mps" and hasattr(torch.mps, 'empty_cache'):
-            torch.mps.empty_cache()
+        clear_cache()
     
     torch.save(transformer.state_dict(), os.path.join(save_dir, 'final_transformer.pt'))
     logger.save()
@@ -269,10 +260,7 @@ def reset_dead_codebook_entries(vqvae, data_loader, reset_threshold=0.01, device
                 continue
                 
             x = data[0] if isinstance(data, (list, tuple)) else data
-            x = x.to(device)
-            
-            if USE_FLOAT16 and device != "cpu":
-                x = x.to(torch.float16)
+            x = to_device_and_dtype(x, device).contiguous()
                 
             _, _, indices, _ = vqvae(x, normalize=False)
             
@@ -334,37 +322,106 @@ def fine_tune_codebook(vqvae, train_loader, epochs=3, learning_rate=0.0001,
         train_batches = 0
         
         for data in tqdm(train_loader, desc="Fine-tuning"):
-            x = data[0] if isinstance(data, (list, tuple)) else data
-            x = x.to(device)
-            
-            if USE_FLOAT16 and device != "cpu":
-                x = x.to(torch.float16)
-            
-            optimizer.zero_grad()
-            
-            x_recon, vq_loss, _, perplexity = vqvae(x)
-            recon_loss = mse_loss(x_recon, x)
-            loss = recon_loss + vq_loss
-            
-            loss.backward()
-            optimizer.step()
-            
-            train_loss += loss.item()
-            train_recon_loss += recon_loss.item()
-            train_vq_loss += vq_loss.item()
-            train_perplexity += perplexity.item()
-            train_batches += 1
+            try:
+                x = data[0] if isinstance(data, (list, tuple)) else data
+                x = to_device_and_dtype(x, device).contiguous()
+                
+                optimizer.zero_grad()
+                
+                x_recon, vq_loss, _, perplexity = vqvae(x)
+                recon_loss = mse_loss(x_recon, x)
+                loss = recon_loss + vq_loss
+                
+                try:
+                    loss.backward()
+                    optimizer.step()
+                except RuntimeError as e:
+                    if "view size is not compatible" in str(e):
+                        optimizer.zero_grad()
+                        clear_cache()
+                        
+                        x_recon_safe = x_recon.clone().detach().contiguous()
+                        x_safe = x.clone().detach().contiguous()
+                        
+                        recon_loss = torch.nn.functional.mse_loss(x_recon_safe, x_safe)
+                        
+                        if isinstance(vq_loss, torch.Tensor):
+                            vq_loss_val = vq_loss.item()
+                        else:
+                            vq_loss_val = vq_loss
+                            
+                        total_loss = recon_loss * (1.0 + vq_loss_val / recon_loss.item())
+                        
+                        total_loss.backward()
+                        optimizer.step()
+                    else:
+                        print(f"Unrecoverable error in backward pass: {e}")
+                        optimizer.zero_grad()
+                        clear_cache()
+                        continue
+                
+                if isinstance(vq_loss, torch.Tensor):
+                    vq_loss_item = vq_loss.item()
+                else:
+                    vq_loss_item = vq_loss
+                    
+                train_loss += loss.item()
+                train_recon_loss += recon_loss.item()
+                train_vq_loss += vq_loss_item
+                train_perplexity += perplexity.item()
+                train_batches += 1
+                
+                if train_batches % 50 == 0:
+                    clear_cache()
+                
+            except RuntimeError as e:
+                print(f"Error processing batch: {e}")
+                if "view size is not compatible" in str(e):
+                    try:
+                        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                        clear_cache()
+                        
+                        x = x.clone().detach().contiguous()
+                        x_recon, vq_loss, _, perplexity = vqvae(x)
+                        recon_loss = mse_loss(x_recon.contiguous(), x.contiguous())
+                        
+                        if isinstance(vq_loss, torch.Tensor):
+                            loss = recon_loss + vq_loss
+                            vq_loss_item = vq_loss.item()
+                        else:
+                            loss = recon_loss * (1.0 + vq_loss / recon_loss.item())
+                            vq_loss_item = vq_loss
+                        
+                        try:
+                            loss.backward()
+                            optimizer.step()
+                        except RuntimeError:
+                            optimizer.zero_grad()
+                            clear_cache()
+                            continue
+                        
+                        train_loss += loss.item()
+                        train_recon_loss += recon_loss.item()
+                        train_vq_loss += vq_loss_item
+                        train_perplexity += perplexity.item()
+                        train_batches += 1
+                    except Exception:
+                        optimizer.zero_grad()
+                        clear_cache()
+                else:
+                    optimizer.zero_grad()
+                    clear_cache()
+                continue
         
-        train_loss /= train_batches
-        train_recon_loss /= train_batches
-        train_vq_loss /= train_batches
-        train_perplexity /= train_batches
+        train_loss /= max(1, train_batches)
+        train_recon_loss /= max(1, train_batches)
+        train_vq_loss /= max(1, train_batches)
+        train_perplexity /= max(1, train_batches)
         
         print(f"Loss: {train_loss:.6f}, Recon: {train_recon_loss:.6f}, "
               f"VQ: {train_vq_loss:.6f}, Perplexity: {train_perplexity:.2f}")
         
-        if device == "mps" and hasattr(torch.mps, 'empty_cache'):
-            torch.mps.empty_cache()
+        clear_cache()
     
     torch.save(vqvae.state_dict(), os.path.join(save_dir, 'vqvae_fine_tuned.pt'))
     
@@ -378,30 +435,38 @@ def create_token_dataset(vqvae, data_loader, context_length=CONTEXT_LENGTH, devi
     with torch.no_grad():
         for data in tqdm(data_loader, desc="Tokenizing data"):
             x = data[0] if isinstance(data, (list, tuple)) else data
-            x = x.to(device)
-            
-            if USE_FLOAT16 and device != "cpu":
-                x = x.to(torch.float16)
+            x = to_device_and_dtype(x, device).contiguous()
             
             if x.shape[2] > 1000:
                 indices_list = []
                 for i in range(0, x.shape[2], 1000):
                     end_idx = min(i + 1000, x.shape[2])
-                    chunk = x[:, :, i:end_idx]
+                    chunk = x[:, :, i:end_idx].contiguous()
                     indices = vqvae.encode(chunk, normalize=False)
                     indices_list.append(indices.cpu())
-                indices = torch.cat(indices_list, dim=1)
+                indices = torch.cat(indices_list, dim=1).contiguous()
             else:
                 indices = vqvae.encode(x, normalize=False).cpu()
             
+            # Store the indices for this batch
             all_indices.append(indices)
     
-    all_indices = torch.cat(all_indices, dim=1).squeeze(0)
+    # First concatenate along batch dimension
+    concatenated_indices = torch.cat(all_indices, dim=0).contiguous()
+    
+    # Now flatten to get a single sequence of tokens
+    flat_indices = concatenated_indices.reshape(-1).contiguous()
+    
+    # Check if we have enough tokens for training
+    if len(flat_indices) <= context_length + 1:
+        raise ValueError(f"Not enough tokens ({len(flat_indices)}) to create sequences of length {context_length+1}. "
+                         f"Need at least {context_length+2} tokens. Consider using a larger dataset "
+                         f"or reducing the context_length parameter.")
     
     sequences = []
-    for i in range(len(all_indices) - context_length):
-        seq = all_indices[i:i+context_length]
-        target = all_indices[i+1:i+context_length+1]
+    for i in range(len(flat_indices) - context_length):
+        seq = flat_indices[i:i+context_length].contiguous()
+        target = flat_indices[i+1:i+context_length+1].contiguous()
         sequences.append((seq, target))
     
     return sequences
