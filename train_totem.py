@@ -25,6 +25,8 @@ def main():
     parser.add_argument('--save_dir', type=str, default='models')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--max_samples', type=int, default=None)
+    parser.add_argument('--grad_accumulation_steps', type=int, default=GRAD_ACCUMULATION_STEPS)
+    parser.add_argument('--use_cached', action='store_true', help='Use cached preprocessed data')
     
     args = parser.parse_args()
     
@@ -42,7 +44,8 @@ def main():
     train_loader, val_loader, test_loader, dataset_info = load_dataset(
         args.data,
         batch_size=args.batch_size,
-        max_samples=args.max_samples
+        max_samples=args.max_samples,
+        use_cached=args.use_cached
     )
     
     raw_data = dataset_info['raw_data']
@@ -76,7 +79,8 @@ def main():
             val_loader=val_loader,
             epochs=args.epochs,
             learning_rate=args.lr,
-            save_dir=args.save_dir
+            save_dir=args.save_dir,
+            grad_accumulation_steps=args.grad_accumulation_steps
         )
         
         vqvae.eval()
@@ -84,7 +88,7 @@ def main():
         eval_indices = np.random.choice(data_norm.shape[0], max_eval_samples, replace=False)
         eval_data = data_norm[eval_indices]
         
-        data_tensor = torch.tensor(eval_data, dtype=torch.float32).transpose(0, 1).contiguous().unsqueeze(0)
+        data_tensor = torch.tensor(eval_data, dtype=torch.float32).transpose(0, 1).unsqueeze(0)
         data_tensor = to_device_and_dtype(data_tensor)
         
         with torch.no_grad():
@@ -104,10 +108,9 @@ def main():
                 x_recon = x_recon.cpu()
                 indices = indices.cpu()
         
-        recon = x_recon.squeeze().transpose(0, 1).contiguous().numpy()
+        recon = x_recon.squeeze().transpose(0, 1).numpy()
         indices = indices.squeeze().numpy()
         
-        # Calculate simple MSE
         mse = np.mean((eval_data - recon)**2)
         print(f"Reconstruction MSE: {mse:.6f}")
         
@@ -166,7 +169,8 @@ def main():
             val_loader=token_val_loader,
             epochs=args.epochs,
             learning_rate=args.lr,
-            save_dir=args.save_dir
+            save_dir=args.save_dir,
+            grad_accumulation_steps=args.grad_accumulation_steps
         )
         
     elif args.mode == 'finetune':
@@ -202,7 +206,7 @@ def main():
         eval_indices = np.random.choice(data_norm.shape[0], max_eval_samples, replace=False)
         eval_data = data_norm[eval_indices]
         
-        data_tensor = torch.tensor(eval_data, dtype=torch.float32).transpose(0, 1).contiguous().unsqueeze(0)
+        data_tensor = torch.tensor(eval_data, dtype=torch.float32).transpose(0, 1).unsqueeze(0)
         data_tensor = to_device_and_dtype(data_tensor)
         
         with torch.no_grad():

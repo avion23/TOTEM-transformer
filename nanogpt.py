@@ -25,9 +25,9 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x):
         B, T, C = x.size()
         
-        q = self.query(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
-        k = self.key(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
-        v = self.value(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+        q = self.query(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.key(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.value(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
         att = att.masked_fill(self.mask[:T, :T] == 0, float('-inf'))
@@ -35,7 +35,7 @@ class CausalSelfAttention(nn.Module):
         att = self.attn_dropout(att)
         
         y = att @ v
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y = y.transpose(1, 2).view(B, T, C)
         
         y = self.proj(y)
         y = self.proj_dropout(y)
@@ -100,7 +100,6 @@ class NanoGPT(nn.Module):
     
     def forward(self, idx, targets=None):
         B, T = idx.size()
-        idx = idx.contiguous()
         
         tok_emb = self.token_embedding(idx)
         pos_emb = self.pos_embedding[:, :T, :]
@@ -115,15 +114,13 @@ class NanoGPT(nn.Module):
         
         loss = None
         if targets is not None:
-            targets = targets.contiguous()
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
         
         return logits, loss
     
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
-        idx = idx.contiguous()
         for _ in range(max_new_tokens):
-            idx_cond = idx if idx.size(1) <= CONTEXT_LENGTH else idx[:, -CONTEXT_LENGTH:].contiguous()
+            idx_cond = idx if idx.size(1) <= CONTEXT_LENGTH else idx[:, -CONTEXT_LENGTH:]
             
             logits, _ = self(idx_cond)
             
@@ -137,6 +134,6 @@ class NanoGPT(nn.Module):
             
             idx_next = torch.multinomial(probs, num_samples=1)
             
-            idx = torch.cat((idx, idx_next), dim=1).contiguous()
+            idx = torch.cat((idx, idx_next), dim=1)
         
         return idx
