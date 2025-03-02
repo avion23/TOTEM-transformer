@@ -40,7 +40,7 @@ class TotemForecaster:
             raise FileNotFoundError(f"VQVAE model not found: {vqvae_path}")
         
         try:
-            vqvae_state_dict = torch.load(vqvae_path, map_location=self.device)
+            vqvae_state_dict = torch.load(vqvae_path, map_location=self.device, weights_only=True)
             self.vqvae.load_state_dict(vqvae_state_dict)
             self.vqvae.eval()
             print(f"Successfully loaded VQVAE from {vqvae_path}")
@@ -49,7 +49,7 @@ class TotemForecaster:
         
         if transformer_path is not None and os.path.exists(transformer_path):
             try:
-                state_dict = torch.load(transformer_path, map_location=self.device)
+                state_dict = torch.load(transformer_path, map_location=self.device, weights_only=True)
             
                 pos_emb_key = [k for k in state_dict.keys() if 'pos_embedding' in k][0]
                 pos_emb_shape = state_dict[pos_emb_key].shape
@@ -192,6 +192,40 @@ class TotemForecaster:
             
         return metrics
 
+    def analyze_reconstruction(self, data_norm, num_samples=None, feature_names=None):
+        if num_samples is not None and num_samples < len(data_norm):
+            sample_indices = np.random.choice(len(data_norm), num_samples, replace=False)
+            data_subset = data_norm[sample_indices]
+        else:
+            data_subset = data_norm
+        
+        data_tensor = self._prepare_data_tensor(data_subset)
+        
+        with torch.no_grad():
+            x_recon, _, _, _ = self.vqvae(data_tensor, normalize=True)
+        
+        original = data_tensor.cpu().numpy()
+        recon = x_recon.cpu().numpy()
+        
+        mse = np.mean((original - recon)**2)
+        print(f"\nReconstruction Analysis:")
+        print(f"Mean Squared Error: {mse:.6f}")
+        
+        feature_mses = []
+        if self.mode == 'multi' and original.shape[1] > 1:
+            for i in range(original.shape[1]):
+                feature_mse = np.mean((original[:, i] - recon[:, i])**2)
+                feature_name = feature_names[i] if feature_names is not None and i < len(feature_names) else f"Feature {i}"
+                print(f"{feature_name} MSE: {feature_mse:.6f}")
+                feature_mses.append(feature_mse)
+        
+        return {
+            'mse': mse,
+            'feature_mses': feature_mses,
+            'original': original,
+            'reconstruction': recon
+        }
+
 
 def main():
     parser = argparse.ArgumentParser(description='TOTEM Forecaster')
@@ -203,6 +237,10 @@ def main():
     parser.add_argument('--transformer', type=str, default=None)
     parser.add_argument('--top_k', type=int, default=None)
     parser.add_argument('--analyze', action='store_true', help='Analyze codebook usage')
+    parser.add_argument('--analyze_recon', action='store_true', help='Analyze reconstruction quality')
+    parser.add_argument('--samples', type=int, default=5000, help='Number of samples to use')
+    parser.add_argument('--plot', action='store_true', help='Generate visualizations (requires matplotlib)')
+    parser.add_argument('--plot_dir', type=str, default='plots', help='Directory to save plots')
     
     args = parser.parse_args()
     
@@ -210,7 +248,10 @@ def main():
         args.vqvae = os.path.join('models', 'best_vqvae.pt')
     
     if args.transformer is None:
-        args.transformer = 'lightweight_forecast_model.pt'
+        args.transformer = os.path.join('models', 'best_transformer.pt')
+    
+    if args.plot and not os.path.exists(args.plot_dir):
+        os.makedirs(args.plot_dir)
     
     print(f"Running in {args.mode}-feature mode")
     print(f"Using VQVAE: {args.vqvae}")
@@ -235,8 +276,11 @@ def main():
                 print(f"Error: Data file {data_path} not found")
                 return
                 
-        data_norm, raw_data = forecaster.load_data(data_path)
+        data_norm, raw_data = forecaster.load_data(data_path, max_samples=args.samples)
         tokens = forecaster.tokenize(data_norm)
+        
+        feature_names = forecaster.dataset_info['features']
+        print(f"Features: {feature_names}")
         
         if args.mode == 'single':
             price_data = raw_data
@@ -245,7 +289,66 @@ def main():
         
         print(f"Tokenized {len(tokens)} data points")
         
-        forecaster.analyze_codebook_usage(data_norm)
+        if args.analyze or args.analyze_recon:
+            if args.analyze:
+                codebook_metrics = forecaster.analyze_codebook_usage(data_norm)
+            
+            if args.analyze_recon:
+                recon_metrics = forecaster.analyze_reconstruction(data_norm, feature_names=feature_names)
+                
+                if args.plot:
+                    try:
+                        import matplotlib.pyplot as plt
+                        
+                        plt.figure(figsize=(12, 8))
+                        
+                        if args.mode == 'multi':
+                            num_features = min(3, recon_metrics['original'].shape[1])
+                            for i in range(num_features):
+                                plt.subplot(num_features, 1, i+1)
+                                feature_name = feature_names[i] if i < len(feature_names) else f"Feature {i}"
+                                plt.plot(recon_metrics['original'][0, i, :200], 'b-', label=f'Original {feature_name}', linewidth=1.5)
+                                plt.plot(recon_metrics['reconstruction'][0, i, :200], 'r--', label=f'Reconstruction', linewidth=1.5)
+                                plt.legend(loc='upper right')
+                                plt.grid(True, alpha=0.3)
+                                plt.ylabel(feature_name)
+                                if i == 0:
+                                    plt.title('Original vs Reconstruction')
+                                if i == num_features - 1:
+                                    plt.xlabel('Time Steps')
+                        else:
+                            plt.plot(recon_metrics['original'][0, 0, :200], 'b-', label='Original', linewidth=1.5)
+                            plt.plot(recon_metrics['reconstruction'][0, 0, :200], 'r--', label='Reconstruction', linewidth=1.5)
+                            plt.legend(loc='upper right')
+                            plt.grid(True, alpha=0.3)
+                            plt.title('Original vs Reconstruction')
+                            plt.xlabel('Time Steps')
+                            plt.ylabel('Value')
+                            
+                        plt.tight_layout()
+                        plot_path = os.path.join(args.plot_dir, 'reconstruction_plot.png')
+                        plt.savefig(plot_path, dpi=300)
+                        print(f"Saved reconstruction plot to {plot_path}")
+                        plt.close()
+                        
+                        # Plot token distribution 
+                        plt.figure(figsize=(10, 6))
+                        token_counts = np.bincount(tokens.astype(np.int32), minlength=CODEBOOK_SIZE)
+                        active_indices = np.where(token_counts > 0)[0]
+                        active_counts = token_counts[active_indices]
+                        plt.bar(active_indices, active_counts)
+                        plt.title('Token Distribution')
+                        plt.xlabel('Token ID')
+                        plt.ylabel('Frequency')
+                        plt.grid(True, alpha=0.3)
+                        plt.tight_layout()
+                        token_plot_path = os.path.join(args.plot_dir, 'token_distribution.png')
+                        plt.savefig(token_plot_path, dpi=300)
+                        print(f"Saved token distribution plot to {token_plot_path}")
+                        plt.close()
+                        
+                    except ImportError:
+                        print("Matplotlib not available. Skipping plot generation.")
         
         if forecaster.transformer is not None:
             forecasts = []
@@ -270,6 +373,37 @@ def main():
                 print(f"Final forecast: ${forecast_prices[-1]:.2f}")
                 print(f"Change: ${change:.2f} ({perc:.2f}%)")
                 print(f"Forecast volatility: ${volatility:.2f}")
+                
+                if args.plot and len(forecasts) > 0:
+                    try:
+                        import matplotlib.pyplot as plt
+                        plt.figure(figsize=(12, 6))
+                        
+                        history_points = 50
+                        if len(price_data) > history_points:
+                            plt.plot(range(-history_points, 0), price_data[-history_points:], 'b-', label='Historical Prices', linewidth=1.5)
+                        else:
+                            plt.plot(range(-len(price_data), 0), price_data, 'b-', label='Historical Prices', linewidth=1.5)
+                        
+                        colors = ['r', 'g', 'c', 'm', 'y', 'k']
+                        for i, (temp, forecast) in enumerate(zip(args.temps, forecasts)):
+                            color = colors[i % len(colors)]
+                            plt.plot(range(len(forecast)), forecast, linestyle='--', color=color, marker='o', markersize=3, 
+                                     label=f'Forecast (temp={temp})')
+                            
+                        plt.axvline(x=0, color='k', linestyle='--', alpha=0.5)
+                        plt.title('Price Forecast')
+                        plt.xlabel('Time Steps')
+                        plt.ylabel('Price')
+                        plt.legend()
+                        plt.grid(True, alpha=0.3)
+                        plt.tight_layout()
+                        forecast_plot_path = os.path.join(args.plot_dir, 'forecast_plot.png')
+                        plt.savefig(forecast_plot_path, dpi=300)
+                        print(f"Saved forecast plot to {forecast_plot_path}")
+                        plt.close()
+                    except ImportError:
+                        print("Matplotlib not available. Skipping plot generation.")
         
         clear_cache()
             
