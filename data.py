@@ -74,21 +74,47 @@ def load_processed_data(save_path):
     return data['data'], data['mean'], data['std'], data['features']
 
 
-def create_dataloaders(data, batch_size=BATCH_SIZE, train_split=0.8, val_split=0.1, seq_len=CONTEXT_LENGTH, pred_len=OUT_LENGTH):
-    n = data.shape[1]
+def create_dataloaders(data_path, batch_size=BATCH_SIZE, feature_mode='multi'):
+    cache_dir = os.path.join(os.path.dirname(data_path), 'cache')
+    cache_file = os.path.join(cache_dir, f"{os.path.basename(data_path)}.npz")
+    
+    if os.path.exists(cache_file):
+        print(f"Loading preprocessed data from cache: {cache_file}")
+        raw_data, mean, std, features = load_processed_data(cache_file)
+    else:
+        raw_data, mean, std, features = load_and_preprocess_data(data_path)
+        print(f"Saving preprocessed data to cache: {cache_file}")
+        save_processed_data(raw_data, mean, std, features, cache_file)
+    
+    data_norm, _, _ = normalize_data(raw_data, mean, std)
+    
+    # Select features based on mode
+    if feature_mode == 'single':
+        data_norm = data_norm[:, 0:1]
+        raw_data = raw_data[:, 0:1]
+        mean = mean[:, 0:1]
+        std = std[:, 0:1]
+        features = [features[0]]
+    
+    # Split data
+    train_split = 0.8
+    val_split = 0.1
+    
+    n = data_norm.shape[0]
     train_size = int(n * train_split)
     val_size = int(n * val_split)
     
-    train_data = data[:, :train_size]
-    val_data = data[:, train_size:train_size+val_size]
-    test_data = data[:, train_size+val_size:]
+    train_data = torch.tensor(data_norm[:train_size], dtype=torch.float32).transpose(0, 1)
+    val_data = torch.tensor(data_norm[train_size:train_size+val_size], dtype=torch.float32).transpose(0, 1)
+    test_data = torch.tensor(data_norm[train_size+val_size:], dtype=torch.float32).transpose(0, 1)
     
-    train_dataset = TimeSeriesDataset(train_data, seq_len, pred_len)
-    val_dataset = TimeSeriesDataset(val_data, seq_len, pred_len)
-    test_dataset = TimeSeriesDataset(test_data, seq_len, pred_len)
+    # Create datasets
+    train_dataset = TimeSeriesDataset(train_data)
+    val_dataset = TimeSeriesDataset(val_data)
+    test_dataset = TimeSeriesDataset(test_data)
     
-    import multiprocessing
-    num_workers = min(8, multiprocessing.cpu_count())
+    # Create data loaders
+    num_workers = min(4, os.cpu_count() or 1)
     
     train_loader = DataLoader(
         train_dataset, 
@@ -110,7 +136,16 @@ def create_dataloaders(data, batch_size=BATCH_SIZE, train_split=0.8, val_split=0
         num_workers=num_workers
     )
     
-    return train_loader, val_loader, test_loader
+    dataset_info = {
+        'raw_data': raw_data,
+        'normalized_data': data_norm,
+        'mean': mean,
+        'std': std,
+        'features': features,
+        'data_shape': data_norm.shape
+    }
+    
+    return train_loader, val_loader, test_loader, dataset_info
 
 
 def normalize_data(data, mean=None, std=None):
@@ -146,7 +181,7 @@ def load_dataset(file_path, features=None, max_samples=None, batch_size=BATCH_SI
     
     data_tensor = torch.tensor(data_norm, dtype=torch.float32).transpose(0, 1)
     
-    train_loader, val_loader, test_loader = create_dataloaders(
+    train_loader, val_loader, test_loader = create_dataloaders_from_tensor(
         data_tensor,
         batch_size, train_split, val_split, seq_len, pred_len
     )
@@ -156,7 +191,47 @@ def load_dataset(file_path, features=None, max_samples=None, batch_size=BATCH_SI
         'normalized_data': data_norm,
         'mean': mean,
         'std': std,
-        'features': features
+        'features': features,
+        'data_shape': data_norm.shape
     }
     
     return train_loader, val_loader, test_loader, dataset_info
+
+
+def create_dataloaders_from_tensor(data, batch_size=BATCH_SIZE, train_split=0.8, val_split=0.1, seq_len=CONTEXT_LENGTH, pred_len=OUT_LENGTH):
+    n = data.shape[1]
+    train_size = int(n * train_split)
+    val_size = int(n * val_split)
+    
+    train_data = data[:, :train_size]
+    val_data = data[:, train_size:train_size+val_size]
+    test_data = data[:, train_size+val_size:]
+    
+    train_dataset = TimeSeriesDataset(train_data, seq_len, pred_len)
+    val_dataset = TimeSeriesDataset(val_data, seq_len, pred_len)
+    test_dataset = TimeSeriesDataset(test_data, seq_len, pred_len)
+    
+    import multiprocessing
+    num_workers = min(4, multiprocessing.cpu_count())
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        pin_memory=True, 
+        num_workers=num_workers
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=batch_size, 
+        pin_memory=True, 
+        num_workers=num_workers
+    )
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=batch_size, 
+        pin_memory=True, 
+        num_workers=num_workers
+    )
+    
+    return train_loader, val_loader, test_loader

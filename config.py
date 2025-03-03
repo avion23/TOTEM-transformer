@@ -1,11 +1,11 @@
 import torch
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
-USE_FLOAT16 = True if DEVICE in ["mps", "cuda"] else False
+USE_FLOAT16 = False  # Disabled float16 to prevent type mismatches
 
 EMBEDDING_DIM = 64
 CODEBOOK_SIZE = 256
-COMMITMENT_COST = 0.5
+COMMITMENT_COST = 1.5  # Increased from 0.75 to encourage better codebook usage
 COMPRESSION_FACTOR = 4
 
 NUM_HIDDENS = 128

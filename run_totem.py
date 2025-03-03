@@ -41,7 +41,23 @@ class TotemForecaster:
         
         try:
             vqvae_state_dict = torch.load(vqvae_path, map_location=self.device, weights_only=True)
-            self.vqvae.load_state_dict(vqvae_state_dict)
+            
+            # Handle missing EMA buffers
+            missing_keys = []
+            model_dict = self.vqvae.state_dict()
+            for k in model_dict.keys():
+                if k not in vqvae_state_dict and k in ["vq._ema_cluster_size", "vq._ema_w"]:
+                    missing_keys.append(k)
+                    
+            # Initialize missing EMA buffers
+            if "vq._ema_cluster_size" in missing_keys:
+                self.vqvae.vq.register_buffer('_ema_cluster_size', torch.zeros(CODEBOOK_SIZE))
+                
+            if "vq._ema_w" in missing_keys:
+                self.vqvae.vq.register_buffer('_ema_w', torch.zeros(CODEBOOK_SIZE, EMBEDDING_DIM))
+            
+            # Strict=False to ignore missing keys
+            self.vqvae.load_state_dict(vqvae_state_dict, strict=False)
             self.vqvae.eval()
             print(f"Successfully loaded VQVAE from {vqvae_path}")
         except Exception as e:
